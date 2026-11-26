@@ -1,0 +1,735 @@
+{
+  "name": "AI Healthcare Voice Receptionist - Public Template",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "check-availability",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "4a365d96-9046-4ea9-a051-74363db009ce",
+      "name": "Webhook Check",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        16,
+        0
+      ],
+      "webhookId": "fa61052d-1c36-4055-a235-7821142e2a8c"
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "YOUR_GOOGLE_SHEET_ID",
+          "cachedResultName": "Hospital Reception Data (replace)",
+          "cachedResultUrl": ""
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Doctors"
+        },
+        "options": {}
+      },
+      "id": "a96935b9-68ef-4df6-b545-ec6f389ec63a",
+      "name": "Get Doctors",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        240,
+        0
+      ],
+      "alwaysOutputData": true,
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "YOUR_GOOGLE_SHEET_ID",
+          "cachedResultName": "Hospital Reception Data (replace)",
+          "cachedResultUrl": ""
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Appointments"
+        },
+        "options": {}
+      },
+      "id": "2f6b71ad-3e3a-4e47-82d9-b99fee3eb6db",
+      "name": "Get Appointments",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        464,
+        0
+      ],
+      "executeOnce": true,
+      "alwaysOutputData": true,
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "jsCode": "const pad = n => String(n).padStart(2, '0');\nfunction toMin(t) {\n  if (t === null || t === undefined || t === '') return null;\n  if (typeof t === 'number' || /^0?\\.\\d+$/.test(String(t))) { const f = Number(t); if (f < 1) return Math.round(f * 1440); }\n  const m = String(t).trim().match(/^(\\d{1,2})(?:[:.](\\d{2}))?(?::\\d{2})?\\s*(AM|PM)?$/i);\n  if (!m) return null;\n  let h = +m[1]; const mi = +(m[2] || 0); const ap = (m[3] || '').toUpperCase();\n  if (ap === 'PM' && h < 12) h += 12;\n  if (ap === 'AM' && h === 12) h = 0;\n  if (h > 23 || mi > 59) return null;\n  return h * 60 + mi;\n}\nconst fmt = min => pad(Math.floor(min / 60)) + ':' + pad(min % 60);\nfunction normDate(s) {\n  s = String(s || '').trim();\n  let m = s.match(/^(\\d{4})-(\\d{1,2})-(\\d{1,2})/);\n  if (m) return m[1] + '-' + pad(m[2]) + '-' + pad(m[3]);\n  m = s.match(/^(\\d{1,2})[\\/\\-](\\d{1,2})[\\/\\-](\\d{4})$/);\n  if (m) return m[3] + '-' + pad(m[2]) + '-' + pad(m[1]);\n  return null;\n}\nconst DAYS = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];\nconst dayName = d => DAYS[new Date(d + 'T00:00:00Z').getUTCDay()];\nconst ist = new Date(Date.now() + 330 * 60000);\nconst today = ist.toISOString().slice(0, 10);\nconst nowMin = ist.getUTCHours() * 60 + ist.getUTCMinutes();\n// ---- read the incoming request (plain JSON from Sarvam, or Retell / Vapi) ----\nconst body = $('Webhook Check').first().json.body || $('Webhook Check').first().json;\nlet args = body.args || body;\nlet toolCallId = null;\nconst tc = body?.message?.toolCallList?.[0] || body?.message?.toolCalls?.[0];\nif (tc) {\n  toolCallId = tc.id;\n  let a = tc.function?.arguments ?? tc.arguments;\n  if (typeof a === 'string') { try { a = JSON.parse(a); } catch (e) { a = {}; } }\n  args = a || {};\n}\nconst callerNumber = body?.call?.from_number || body?.message?.call?.customer?.number || null;\nconst wrap = obj => toolCallId ? { results: [{ toolCallId, result: JSON.stringify(obj) }] } : obj;\n// ---- sheet data ----\nconst doctors = $('Get Doctors').all().map(i => i.json).filter(d => d.doctor_id);\nconst appts = $('Get Appointments').all().map(i => i.json).filter(a => a.doctor_id && a.date);\nconst normName = s => String(s || '').toLowerCase().replace(/\\b(dr|doctor|mr|mrs|ms)\\b\\.?/g, ' ').replace(/[^a-z0-9 ]/g, ' ').replace(/\\s+/g, ' ').trim();\nconst deptMatch = (d, dept) => { const x = String(d.department || '').toLowerCase().trim(); return !!dept && (x.includes(dept) || dept.includes(x)); };\nfunction pickDoctors(a) {\n  const id = String(a.doctor_id || '').trim().toUpperCase();\n  const dept = String(a.department || '').trim().toLowerCase();\n  const name = normName(a.doctor_name);\n  const nameGiven = !!(id || name);\n  let sel = [];\n  if (id) sel = doctors.filter(d => String(d.doctor_id).toUpperCase() === id);\n  if (!sel.length && name) {\n    const toks = name.split(' ').filter(Boolean);\n    sel = doctors.filter(d => { const dn = normName(d.doctor_name); return dn.includes(name) || name.includes(dn) || toks.every(t => dn.includes(t)); });\n    if (sel.length > 1 && dept) { const n = sel.filter(d => deptMatch(d, dept)); if (n.length) sel = n; }\n  }\n  // Only fall back to the department when NO doctor name was given (no silent doctor swap)\n  if (!sel.length && !nameGiven && dept) sel = doctors.filter(d => deptMatch(d, dept));\n  return { sel, nameGiven, dept };\n}\nfunction slotsFor(d, date) {\n  const days = String(d.days).split(',').map(x => x.trim().slice(0, 3).toLowerCase());\n  if (!days.includes(dayName(date).toLowerCase())) return { works: false, slots: [] };\n  const s = toMin(d.start), e = toMin(d.end), step = parseInt(d.slot_min) || 15;\n  if (s === null || e === null) return { works: false, slots: [], bad: true };\n  const booked = new Set(appts\n    .filter(a => String(a.doctor_id).toUpperCase() === String(d.doctor_id).toUpperCase()\n      && normDate(a.date) === date && String(a.status).toLowerCase() === 'booked')\n    .map(a => toMin(a.time)));\n  const out = [];\n  for (let t = s; t + step <= e; t += step) {\n    if (booked.has(t)) continue;\n    if (date === today && t <= nowMin) continue;\n    out.push(fmt(t));\n  }\n  return { works: true, slots: out, step, s, e };\n}\nconst doctorList = () => doctors.map(x => x.doctor_name + ' (' + x.department + ')').join(', ');\n\nconst date = normDate(args.date);\nif (!date) return [{ json: { response: wrap({ error: 'Please give a valid date (YYYY-MM-DD).' }) } }];\nif (date < today) return [{ json: { response: wrap({ error: 'That date is in the past. Ask the patient for a future date.' }) } }];\nconst reqMin = toMin(args.time);\nconst { sel, nameGiven } = pickDoctors(args);\nif (!sel.length) return [{ json: { response: wrap({\n  error: nameGiven ? 'No doctor with that name was found. Do not use that name. Offer the doctors listed.' : 'No matching department found.',\n  doctors_available: doctorList(), available_departments: [...new Set(doctors.map(d => d.department))]\n}) } }];\n\nconst limit = sel.length === 1 ? 40 : 10;\nconst results = sel.map(d => {\n  const r = slotsFor(d, date);\n  let list = r.slots;\n  if (reqMin !== null && list.length > limit) {\n    list = [...list].sort((a, b) => Math.abs(toMin(a) - reqMin) - Math.abs(toMin(b) - reqMin)).slice(0, limit).sort();\n  } else list = list.slice(0, limit);\n  const out = {\n    doctor_id: d.doctor_id, doctor_name: d.doctor_name, department: d.department,\n    works_that_day: r.works, working_days: d.days,\n    free_slots: list, total_free_slots: r.slots.length\n  };\n  if (reqMin !== null) out.requested_time_available = r.slots.includes(fmt(reqMin));\n  return out;\n});\nreturn [{ json: { response: wrap({ date, day: dayName(date), note: 'Offer only the times in free_slots. If requested_time_available is false, that time is NOT available.', doctors: results }) } }];\n"
+      },
+      "id": "5fd3a28c-af71-4fa9-b7f4-5c22df3be121",
+      "name": "Compute Free Slots",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        688,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json.response) }}",
+        "options": {}
+      },
+      "id": "8e7cbca4-2222-4d7f-bcc3-08e6c3d16fd2",
+      "name": "Respond Slots",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        912,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "book-appointment",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "16aee894-907c-4b80-8f60-6c45957436be",
+      "name": "Webhook Book",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        352
+      ],
+      "webhookId": "5a6799cd-ae8d-4759-a559-4e05442eec9f"
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "YOUR_GOOGLE_SHEET_ID",
+          "cachedResultName": "Hospital Reception Data (replace)",
+          "cachedResultUrl": ""
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Doctors"
+        },
+        "options": {}
+      },
+      "id": "82866e3b-6f79-4cd2-8bd0-7ba3628c7391",
+      "name": "Get Doctors Book",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        240,
+        352
+      ],
+      "alwaysOutputData": true,
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "YOUR_GOOGLE_SHEET_ID",
+          "cachedResultName": "Hospital Reception Data (replace)",
+          "cachedResultUrl": ""
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Appointments"
+        },
+        "options": {}
+      },
+      "id": "22b53ea3-9439-4e8e-83d6-a8d4c245d9a9",
+      "name": "Get Appointments Book",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        448,
+        352
+      ],
+      "executeOnce": true,
+      "alwaysOutputData": true,
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "jsCode": "const pad = n => String(n).padStart(2, '0');\nfunction toMin(t) {\n  if (t === null || t === undefined || t === '') return null;\n  if (typeof t === 'number' || /^0?\\.\\d+$/.test(String(t))) { const f = Number(t); if (f < 1) return Math.round(f * 1440); }\n  const m = String(t).trim().match(/^(\\d{1,2})(?:[:.](\\d{2}))?(?::\\d{2})?\\s*(AM|PM)?$/i);\n  if (!m) return null;\n  let h = +m[1]; const mi = +(m[2] || 0); const ap = (m[3] || '').toUpperCase();\n  if (ap === 'PM' && h < 12) h += 12;\n  if (ap === 'AM' && h === 12) h = 0;\n  if (h > 23 || mi > 59) return null;\n  return h * 60 + mi;\n}\nconst fmt = min => pad(Math.floor(min / 60)) + ':' + pad(min % 60);\nfunction normDate(s) {\n  s = String(s || '').trim();\n  let m = s.match(/^(\\d{4})-(\\d{1,2})-(\\d{1,2})/);\n  if (m) return m[1] + '-' + pad(m[2]) + '-' + pad(m[3]);\n  m = s.match(/^(\\d{1,2})[\\/\\-](\\d{1,2})[\\/\\-](\\d{4})$/);\n  if (m) return m[3] + '-' + pad(m[2]) + '-' + pad(m[1]);\n  return null;\n}\nconst DAYS = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];\nconst dayName = d => DAYS[new Date(d + 'T00:00:00Z').getUTCDay()];\nconst ist = new Date(Date.now() + 330 * 60000);\nconst today = ist.toISOString().slice(0, 10);\nconst nowMin = ist.getUTCHours() * 60 + ist.getUTCMinutes();\n// ---- read the incoming request (plain JSON from Sarvam, or Retell / Vapi) ----\nconst body = $('Webhook Book').first().json.body || $('Webhook Book').first().json;\nlet args = body.args || body;\nlet toolCallId = null;\nconst tc = body?.message?.toolCallList?.[0] || body?.message?.toolCalls?.[0];\nif (tc) {\n  toolCallId = tc.id;\n  let a = tc.function?.arguments ?? tc.arguments;\n  if (typeof a === 'string') { try { a = JSON.parse(a); } catch (e) { a = {}; } }\n  args = a || {};\n}\nconst callerNumber = body?.call?.from_number || body?.message?.call?.customer?.number || null;\nconst wrap = obj => toolCallId ? { results: [{ toolCallId, result: JSON.stringify(obj) }] } : obj;\n// ---- sheet data ----\nconst doctors = $('Get Doctors Book').all().map(i => i.json).filter(d => d.doctor_id);\nconst appts = $('Get Appointments Book').all().map(i => i.json).filter(a => a.doctor_id && a.date);\nconst normName = s => String(s || '').toLowerCase().replace(/\\b(dr|doctor|mr|mrs|ms)\\b\\.?/g, ' ').replace(/[^a-z0-9 ]/g, ' ').replace(/\\s+/g, ' ').trim();\nconst deptMatch = (d, dept) => { const x = String(d.department || '').toLowerCase().trim(); return !!dept && (x.includes(dept) || dept.includes(x)); };\nfunction pickDoctors(a) {\n  const id = String(a.doctor_id || '').trim().toUpperCase();\n  const dept = String(a.department || '').trim().toLowerCase();\n  const name = normName(a.doctor_name);\n  const nameGiven = !!(id || name);\n  let sel = [];\n  if (id) sel = doctors.filter(d => String(d.doctor_id).toUpperCase() === id);\n  if (!sel.length && name) {\n    const toks = name.split(' ').filter(Boolean);\n    sel = doctors.filter(d => { const dn = normName(d.doctor_name); return dn.includes(name) || name.includes(dn) || toks.every(t => dn.includes(t)); });\n    if (sel.length > 1 && dept) { const n = sel.filter(d => deptMatch(d, dept)); if (n.length) sel = n; }\n  }\n  // Only fall back to the department when NO doctor name was given (no silent doctor swap)\n  if (!sel.length && !nameGiven && dept) sel = doctors.filter(d => deptMatch(d, dept));\n  return { sel, nameGiven, dept };\n}\nfunction slotsFor(d, date) {\n  const days = String(d.days).split(',').map(x => x.trim().slice(0, 3).toLowerCase());\n  if (!days.includes(dayName(date).toLowerCase())) return { works: false, slots: [] };\n  const s = toMin(d.start), e = toMin(d.end), step = parseInt(d.slot_min) || 15;\n  if (s === null || e === null) return { works: false, slots: [], bad: true };\n  const booked = new Set(appts\n    .filter(a => String(a.doctor_id).toUpperCase() === String(d.doctor_id).toUpperCase()\n      && normDate(a.date) === date && String(a.status).toLowerCase() === 'booked')\n    .map(a => toMin(a.time)));\n  const out = [];\n  for (let t = s; t + step <= e; t += step) {\n    if (booked.has(t)) continue;\n    if (date === today && t <= nowMin) continue;\n    out.push(fmt(t));\n  }\n  return { works: true, slots: out, step, s, e };\n}\nconst doctorList = () => doctors.map(x => x.doctor_name + ' (' + x.department + ')').join(', ');\n\nconst fail = (msg, extra = {}) => [{ json: { ok: false, response: wrap({ status: 'failed', message: msg, ...extra }) } }];\n\nconst patient_name = String(args.patient_name || '').trim();\nlet ph = String(args.phone || callerNumber || '').replace(/\\D/g, '');\nif (ph.length === 12 && ph.startsWith('91')) ph = ph.slice(2);\nelse if (ph.length === 11 && ph.startsWith('0')) ph = ph.slice(1);\nconst phone = ph;\nconst reason = String(args.reason || '').trim();\nconst date = normDate(args.date);\nconst tmin = toMin(args.time);\n\nif (!patient_name) return fail('Patient name is missing. Ask for the name.');\nif (/[^\\x20-\\x7E]/.test(patient_name)) return fail('The patient name must be in English letters only. Write the name in English and call book_appointment again.');\nif (phone.length !== 10 || !/^[6-9]/.test(phone)) return fail('The phone number must be exactly 10 digits. Ask the patient to say the 10-digit mobile number again.');\nif (!date) return fail('Date is missing or invalid. Use YYYY-MM-DD.');\nif (tmin === null) return fail('Time is missing or invalid. Use HH:mm, for example 10:30.');\nif (date < today) return fail('That date is in the past.');\n\nlet { sel, nameGiven } = pickDoctors(args);\nif (!sel.length) return fail(nameGiven\n  ? 'No doctor with that name was found. Do NOT confirm the booking. Offer one of these doctors: ' + doctorList()\n  : 'No matching department found. Departments: ' + [...new Set(doctors.map(d => d.department))].join(', '));\nif (sel.length > 1) {\n  // several doctors in the department and no doctor named: pick the one who is free at that time, if only one is\n  const free = sel.filter(x => slotsFor(x, date).slots.includes(fmt(tmin)));\n  if (free.length === 1) sel = free;\n  else return fail('Several doctors match. Ask the patient which doctor they want.', {\n    doctors: sel.map(x => ({ doctor_name: x.doctor_name, free_at_requested_time: slotsFor(x, date).slots.includes(fmt(tmin)), free_slots: slotsFor(x, date).slots.slice(0, 8) }))\n  });\n}\nconst d = sel[0];\n\nconst r = slotsFor(d, date);\nif (!r.works) return fail(d.doctor_name + ' does not work on ' + dayName(date) + '.', { working_days: d.days });\nif (tmin < r.s || tmin + r.step > r.e || (tmin - r.s) % r.step !== 0)\n  return fail('That time is not a valid slot for ' + d.doctor_name + '. Offer one of the free_slots.', { free_slots: r.slots.slice(0, 8) });\nif (!r.slots.includes(fmt(tmin)))\n  return fail('That slot is already booked or has passed. Offer another time from free_slots.', { free_slots: r.slots.slice(0, 8) });\n\nconst FULLDAYS = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];\nconst MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];\nconst to12 = m => { const h = Math.floor(m / 60), mi = m % 60; return ((h % 12) || 12) + ':' + pad(mi) + ' ' + (h < 12 ? 'AM' : 'PM'); };\nconst niceDate = x => { const [y, mo, da] = x.split('-').map(Number); return FULLDAYS[new Date(x + 'T00:00:00Z').getUTCDay()] + ', ' + da + ' ' + MONTHS[mo - 1] + ' ' + y; };\nconst time = fmt(tmin);\nconst endTime = fmt(tmin + r.step);\nconst stamp = Date.now().toString(36).toUpperCase();\nconst row = {\n  appt_id: 'APT-' + stamp,\n  patient_name, phone,\n  doctor_id: d.doctor_id, doctor_name: d.doctor_name, department: d.department,\n  date, time, reason,\n  status: 'booked',\n  calendar_event_id: '',\n  created_at: ist.toISOString().replace('Z', '+05:30'),\n  reminder_sent: ''\n};\nconst result = {\n  status: 'booked', message: 'Appointment confirmed.',\n  appt_id: row.appt_id, patient_name, doctor_name: d.doctor_name,\n  department: d.department, date, day: dayName(date), time, time_12h: to12(tmin)\n};\nconst clean = s => String(s).replace(/[\\r\\n\\t]+/g, ' ').replace(/ {2,}/g, ' ').trim();\nconst waPayload = {\n  messaging_product: 'whatsapp',\n  to: '91' + phone,\n  type: 'template',\n  template: {\n    name: 'appointment_confirmation',\n    language: { code: 'en' },\n    components: [{\n      type: 'body',\n      parameters: [\n        clean(patient_name), clean(d.doctor_name), clean(d.department),\n        niceDate(date), to12(tmin), row.appt_id\n      ].map(t => ({ type: 'text', text: t }))\n    }]\n  }\n};\nreturn [{ json: {\n  ok: true, row,\n  calendar: {\n    start: date + 'T' + time + ':00+05:30',\n    end: date + 'T' + endTime + ':00+05:30',\n    summary: patient_name + ' - ' + d.doctor_name + ' (' + d.department + ')',\n    description: 'Phone: ' + phone + '\\nReason: ' + reason + '\\nAppt ID: ' + row.appt_id\n  },\n  wa_payload: waPayload,\n  result, toolCallId,\n  response: wrap(result)\n} }];\n"
+      },
+      "id": "0a147933-596e-454e-a2cb-372ec20f1882",
+      "name": "Validate Booking",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        672,
+        352
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "2028148d-ca4c-4195-ab19-be11f901ec94",
+              "leftValue": "={{ $json.ok }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "f1dfdc93-5644-4084-99c9-196f2f5a8bd7",
+      "name": "Slot OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        896,
+        352
+      ]
+    },
+    {
+      "parameters": {
+        "calendar": {
+          "__rl": true,
+          "mode": "list",
+          "value": "YOUR_GOOGLE_CALENDAR_ID",
+          "cachedResultName": "Your Google Calendar"
+        },
+        "start": "={{ $('Validate Booking').first().json.calendar.start }}",
+        "end": "={{ $('Validate Booking').first().json.calendar.end }}",
+        "additionalFields": {
+          "description": "={{ $('Validate Booking').first().json.calendar.description }}",
+          "summary": "={{ $('Validate Booking').first().json.calendar.summary }}"
+        }
+      },
+      "id": "8983911f-f952-4ca2-969a-c8a3e8c86b96",
+      "name": "Create Calendar Event",
+      "type": "n8n-nodes-base.googleCalendar",
+      "typeVersion": 1.3,
+      "position": [
+        1568,
+        256
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{ json: { ...$('Validate Booking').first().json.row } }];\n"
+      },
+      "id": "9340ec34-bbc8-45ed-b15d-f54e3fb098ca",
+      "name": "Build Row",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1120,
+        256
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "YOUR_GOOGLE_SHEET_ID",
+          "cachedResultName": "Hospital Reception Data (replace)",
+          "cachedResultUrl": ""
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Appointments"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [],
+          "schema": []
+        },
+        "options": {
+          "cellFormat": "RAW"
+        }
+      },
+      "id": "ab90883f-3e5c-4e59-833e-4761ca8ddb06",
+      "name": "Save to Appointments Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        1344,
+        256
+      ],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 1000
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json.response) }}",
+        "options": {}
+      },
+      "id": "29de6462-949b-4de8-934a-f027f1bb93a3",
+      "name": "Respond Booked",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        2240,
+        256
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json.response) }}",
+        "options": {}
+      },
+      "id": "dabe431c-ceb6-4495-b599-da0e10e73d6e",
+      "name": "Respond Failed",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1120,
+        448
+      ]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "*/10 8-19 * * *"
+            }
+          ]
+        }
+      },
+      "id": "0f105980-909b-441d-ac78-ba24e3271831",
+      "name": "Every 10 Minutes",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        720
+      ]
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "YOUR_GOOGLE_SHEET_ID",
+          "cachedResultName": "Hospital Reception Data (replace)",
+          "cachedResultUrl": ""
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Appointments"
+        },
+        "options": {}
+      },
+      "id": "ba46a3c6-3bcb-429b-81ff-0e2d172e276a",
+      "name": "Get Appointments Reminder",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        224,
+        720
+      ],
+      "alwaysOutputData": true,
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst pad = n => String(n).padStart(2, '0');\nfunction toMin(t) {\n  if (t === null || t === undefined || t === '') return null;\n  if (typeof t === 'number' || /^0?\\.\\d+$/.test(String(t))) { const f = Number(t); if (f < 1) return Math.round(f * 1440); }\n  const m = String(t).trim().match(/^(\\d{1,2}):(\\d{2})(?::\\d{2})?\\s*(AM|PM)?$/i);\n  if (!m) return null;\n  let h = +m[1]; const mi = +m[2]; const ap = (m[3] || '').toUpperCase();\n  if (ap === 'PM' && h < 12) h += 12;\n  if (ap === 'AM' && h === 12) h = 0;\n  return h * 60 + mi;\n}\nconst fmt = min => pad(Math.floor(min / 60)) + ':' + pad(min % 60);\nfunction normDate(s) {\n  s = String(s || '').trim();\n  let m = s.match(/^(\\d{4})-(\\d{1,2})-(\\d{1,2})/);\n  if (m) return m[1] + '-' + pad(m[2]) + '-' + pad(m[3]);\n  m = s.match(/^(\\d{1,2})[\\/\\-](\\d{1,2})[\\/\\-](\\d{4})$/);\n  if (m) return m[3] + '-' + pad(m[2]) + '-' + pad(m[1]);\n  return null;\n}\nconst FULLDAYS = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];\nconst MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];\nconst to12 = m => { const h = Math.floor(m / 60), mi = m % 60; return ((h % 12) || 12) + ':' + pad(mi) + ' ' + (h < 12 ? 'AM' : 'PM'); };\nconst niceDate = d => { const [y, mo, da] = d.split('-').map(Number); return FULLDAYS[new Date(d + 'T00:00:00Z').getUTCDay()] + ', ' + da + ' ' + MONTHS[mo - 1] + ' ' + y; };\n\nconst rows = $input.all().map(i => i.json).filter(r => r.appt_id && r.date);\nconst now = Date.now();\nconst out = [];\nfor (const r of rows) {\n  if (String(r.status).toLowerCase() !== 'booked') continue;\n  if (String(r.reminder_sent || '').trim() !== '') continue;\n  let ph = String(r.phone || '').replace(/\\D/g, '');\n  if (ph.length === 12 && ph.startsWith('91')) ph = ph.slice(2);\n  else if (ph.length === 11 && ph.startsWith('0')) ph = ph.slice(1);\n  if (ph.length !== 10 || !/^[6-9]/.test(ph)) continue;\n  const date = normDate(r.date), tmin = toMin(r.time);\n  if (!date || tmin === null) continue;\n  const apptMs = Date.parse(date + 'T' + fmt(tmin) + ':00+05:30');\n  const minsAway = (apptMs - now) / 60000;\n  if (minsAway >= 50 && minsAway <= 65) {\n    const clean = x => String(x).replace(/[\\r\\n\\t]+/g, ' ').replace(/ {2,}/g, ' ').trim();\n    out.push({ json: {\n      appt_id: r.appt_id,\n      wa_payload: {\n        messaging_product: 'whatsapp',\n        to: '91' + ph,\n        type: 'template',\n        template: {\n          name: 'appointment_reminder',\n          language: { code: 'en' },\n          components: [{\n            type: 'body',\n            parameters: [\n              clean(r.patient_name || 'Patient'), clean(r.doctor_name), clean(r.department),\n              niceDate(date), to12(tmin), r.appt_id\n            ].map(t => ({ type: 'text', text: t }))\n          }]\n        }\n      }\n    } });\n  }\n}\nreturn out;\n"
+      },
+      "id": "0acf47fb-2eb6-464a-8f53-10f2030cbfdf",
+      "name": "Find Due Reminders",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        448,
+        720
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst due = $('Find Due Reminders').all();\nconst sent = $input.all();\nconst out = [];\ndue.forEach((d, i) => {\n  const s = sent[i] && sent[i].json;\n  const ok = s && !s.error && s.messages && s.messages[0] && s.messages[0].id;\n  if (ok) out.push({ json: { appt_id: d.json.appt_id, reminder_sent: 'yes' } });\n});\nreturn out;\n"
+      },
+      "id": "8df32fd2-850a-4ea6-ac9c-bc2528b7f976",
+      "name": "Mark Reminder Sent",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        896,
+        720
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "YOUR_GOOGLE_SHEET_ID",
+          "cachedResultName": "Hospital Reception Data (replace)",
+          "cachedResultUrl": ""
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Appointments"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [
+            "appt_id"
+          ],
+          "schema": []
+        },
+        "options": {
+          "cellFormat": "RAW"
+        }
+      },
+      "id": "8f474bd3-07e5-4bd9-96e9-ac796aef2317",
+      "name": "Update Appointment Row",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        1120,
+        720
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://graph.facebook.com/v21.0/YOUR_WHATSAPP_PHONE_NUMBER_ID/messages",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($('Validate Booking').first().json.wa_payload) }}",
+        "options": {}
+      },
+      "name": "Send WhatsApp Confirmation",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1792,
+        256
+      ],
+      "id": "82342115-f221-4a9f-ad62-fd329a3a3614",
+      "notesInFlow": false,
+      "onError": "continueRegularOutput",
+      "notes": "Attach a Header Auth credential: Name = Authorization, Value = Bearer <YOUR_WHATSAPP_ACCESS_TOKEN>."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://graph.facebook.com/v21.0/YOUR_WHATSAPP_PHONE_NUMBER_ID/messages",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.wa_payload) }}",
+        "options": {}
+      },
+      "name": "Send WhatsApp Reminder",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        672,
+        720
+      ],
+      "id": "a2e0007c-d1df-4414-a7a3-459b5fc07a44",
+      "notesInFlow": false,
+      "onError": "continueRegularOutput",
+      "notes": "Attach a Header Auth credential: Name = Authorization, Value = Bearer <YOUR_WHATSAPP_ACCESS_TOKEN>."
+    },
+    {
+      "parameters": {
+        "jsCode": "const v = $('Validate Booking').first().json;\nconst s = $input.first().json || {};\nconst sent = !!(s.messages && s.messages[0] && s.messages[0].id);\nconst last4 = String(v.row.phone).slice(-4);\nconst result = { ...v.result,\n  whatsapp_sent: sent,\n  whatsapp_status: sent\n    ? 'Confirmation sent on WhatsApp to the number ending in ' + last4 + '.'\n    : 'The appointment is saved, but the WhatsApp message could not be sent. Tell the patient the booking is confirmed and not to expect a WhatsApp message.'\n};\nconst response = v.toolCallId ? { results: [{ toolCallId: v.toolCallId, result: JSON.stringify(result) }] } : result;\nreturn [{ json: { response, whatsapp_error: s.error ? JSON.stringify(s.error).slice(0, 500) : '' } }];\n"
+      },
+      "id": "599b650d-4635-4905-b886-8950c2f23ba6",
+      "name": "Final Booked Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2016,
+        256
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Webhook Check": {
+      "main": [
+        [
+          {
+            "node": "Get Doctors",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Doctors": {
+      "main": [
+        [
+          {
+            "node": "Get Appointments",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Appointments": {
+      "main": [
+        [
+          {
+            "node": "Compute Free Slots",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Compute Free Slots": {
+      "main": [
+        [
+          {
+            "node": "Respond Slots",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook Book": {
+      "main": [
+        [
+          {
+            "node": "Get Doctors Book",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Doctors Book": {
+      "main": [
+        [
+          {
+            "node": "Get Appointments Book",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Appointments Book": {
+      "main": [
+        [
+          {
+            "node": "Validate Booking",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Booking": {
+      "main": [
+        [
+          {
+            "node": "Slot OK?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Slot OK?": {
+      "main": [
+        [
+          {
+            "node": "Build Row",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Calendar Event": {
+      "main": [
+        [
+          {
+            "node": "Send WhatsApp Confirmation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Row": {
+      "main": [
+        [
+          {
+            "node": "Save to Appointments Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save to Appointments Sheet": {
+      "main": [
+        [
+          {
+            "node": "Create Calendar Event",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Appointments Reminder": {
+      "main": [
+        [
+          {
+            "node": "Find Due Reminders",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find Due Reminders": {
+      "main": [
+        [
+          {
+            "node": "Send WhatsApp Reminder",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark Reminder Sent": {
+      "main": [
+        [
+          {
+            "node": "Update Appointment Row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send WhatsApp Confirmation": {
+      "main": [
+        [
+          {
+            "node": "Final Booked Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send WhatsApp Reminder": {
+      "main": [
+        [
+          {
+            "node": "Mark Reminder Sent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Every 10 Minutes": {
+      "main": [
+        [
+          {
+            "node": "Get Appointments Reminder",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Final Booked Response": {
+      "main": [
+        [
+          {
+            "node": "Respond Booked",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "nodeGroups": []
+}

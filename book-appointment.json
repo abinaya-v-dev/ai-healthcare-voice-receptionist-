@@ -1,0 +1,8 @@
+{
+  "patient_name": "Demo Patient",
+  "phone": "9000000000",
+  "reason": "Routine consultation",
+  "date": "2026-12-10",
+  "time": "10:30",
+  "department": "Cardiology"
+}

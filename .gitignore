@@ -1,0 +1,15 @@
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+credentials.json
+token.json
+*.pem
+*.key
+
+# Local exports / patient data
+patient-data/
+private/
+*.xlsx
+*.csv
+*.log
